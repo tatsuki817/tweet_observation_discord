@@ -65,7 +65,7 @@ def _new_context(browser):
     )
 
 
-def fetch_latest_status_url(username: str) -> Tuple[str, str, str, int]:
+def fetch_status_url_candidates(username: str) -> Tuple[List[str], str, str, int]:
     target_url = f"https://x.com/{username}"
 
     with sync_playwright() as p:
@@ -90,9 +90,8 @@ def fetch_latest_status_url(username: str) -> Tuple[str, str, str, int]:
             browser.close()
             raise ValueError("statusリンクを抽出できませんでした")
 
-        latest_status_url = status_urls[0]
         browser.close()
-        return latest_status_url, page_title, current_url, hit_count
+        return status_urls, page_title, current_url, hit_count
 
 
 def _is_noise_line(line: str) -> bool:
@@ -132,7 +131,6 @@ def _extract_text_from_article_fallback(article_texts: List[str]) -> Optional[st
     if not candidates:
         return None
 
-    # 最も自然で長い候補を採用
     candidates.sort(key=lambda x: len(x), reverse=True)
     return candidates[0]
 
@@ -244,6 +242,23 @@ def try_fetch_post_text(status_url: str) -> Tuple[Optional[str], bool]:
         return None, True
 
 
+def choose_status_with_text(status_urls: List[str]) -> Tuple[str, Optional[str], bool]:
+    print(f"INFO: status URL candidates: {len(status_urls)}")
+
+    for idx, candidate_url in enumerate(status_urls, start=1):
+        print(f"INFO: try candidate[{idx}]: {candidate_url}")
+        post_text, text_failed = try_fetch_post_text(candidate_url)
+        if post_text:
+            print(f"INFO: candidate[{idx}] 本文取得成功。採用URL: {candidate_url}")
+            return candidate_url, post_text, False
+
+        print(f"INFO: candidate[{idx}] 本文取得失敗。固定ツイート等の可能性があるためスキップ")
+
+    fallback_url = status_urls[0]
+    print(f"INFO: 全候補で本文取得できませんでした。先頭候補をフォールバック採用: {fallback_url}")
+    return fallback_url, None, True
+
+
 def main() -> int:
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     discord_username = os.getenv("DISCORD_USERNAME", DEFAULT_DISCORD_USERNAME)
@@ -253,17 +268,18 @@ def main() -> int:
         return 1
 
     try:
-        latest_status_url, page_title, current_url, hit_count = fetch_latest_status_url(TARGET_USERNAME)
+        status_urls, page_title, current_url, hit_count = fetch_status_url_candidates(TARGET_USERNAME)
         print(f"DEBUG: page title: {page_title}")
         print(f"DEBUG: page url: {current_url}")
         print(f"DEBUG: status link candidates: {hit_count}")
+
+        latest_status_url, post_text, text_failed = choose_status_with_text(status_urls)
 
         state = load_state()
         last_id = state.get("last_id")
 
         # 初回実行: URL保存。本文取得は試すが失敗しても成功終了
         if not last_id:
-            post_text, text_failed = try_fetch_post_text(latest_status_url)
             if post_text:
                 print(f"INFO: 初回実行。最新本文ログ: {_truncate_text(post_text, LOG_TEXT_LIMIT)}")
             elif text_failed:
@@ -274,7 +290,6 @@ def main() -> int:
 
         # 2回目以降・新着なし: 本文だけ取得してログに出す（通知しない）
         if last_id == latest_status_url:
-            post_text, text_failed = try_fetch_post_text(latest_status_url)
             if post_text:
                 print(f"INFO: 新着なし。最新本文ログ: {_truncate_text(post_text, LOG_TEXT_LIMIT)}")
             elif text_failed:
@@ -284,7 +299,6 @@ def main() -> int:
             return 0
 
         # 新着あり: 本文取得して通知（失敗時はURLのみで通知）
-        post_text, text_failed = try_fetch_post_text(latest_status_url)
         send_discord(webhook_url, latest_status_url, post_text, discord_username, text_failed)
         save_state(latest_status_url)
         print("新着を通知して last_id を更新しました")
