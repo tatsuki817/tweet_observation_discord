@@ -95,6 +95,48 @@ def fetch_latest_status_url(username: str) -> Tuple[str, str, str, int]:
         return latest_status_url, page_title, current_url, hit_count
 
 
+def _is_noise_line(line: str) -> bool:
+    lower = line.lower().strip()
+    if not lower:
+        return True
+    if lower in {f"@{TARGET_USERNAME.lower()}", "show more", "translate post"}:
+        return True
+    if lower in {"reply", "repost", "like", "bookmark", "share"}:
+        return True
+    if re.fullmatch(r"[\d,\.]+", lower):
+        return True
+    if re.fullmatch(r"\d+[kmb]?", lower):
+        return True
+    if re.search(r"(am|pm|午前|午後)", lower) and re.search(r"\d", lower):
+        return True
+    if re.search(r"\d{4}[/-]\d{1,2}[/-]\d{1,2}", lower):
+        return True
+    if re.search(r"\d+\s*(reply|repost|like|bookmark|view|表示)", lower):
+        return True
+    return False
+
+
+def _extract_text_from_article_fallback(article_texts: List[str]) -> Optional[str]:
+    candidates: List[str] = []
+    for idx, raw in enumerate(article_texts, start=1):
+        normalized = _normalize_text(raw)
+        lines = [ln.strip() for ln in normalized.splitlines() if ln.strip()]
+        cleaned_lines = [ln for ln in lines if not _is_noise_line(ln)]
+        candidate = _normalize_text("\n".join(cleaned_lines))
+        if candidate:
+            candidates.append(candidate)
+            print(f"DEBUG: article fallback candidate[{idx}]: {_truncate_text(candidate, 120)}")
+        else:
+            print(f"DEBUG: article fallback candidate[{idx}]: <empty>")
+
+    if not candidates:
+        return None
+
+    # 最も自然で長い候補を採用
+    candidates.sort(key=lambda x: len(x), reverse=True)
+    return candidates[0]
+
+
 def fetch_post_text(status_url: str) -> Optional[str]:
     selectors = [
         'article [data-testid="tweetText"]',
@@ -126,13 +168,19 @@ def fetch_post_text(status_url: str) -> Optional[str]:
             merged_text = _normalize_text("\n".join([t for t in texts if t.strip()]))
             if merged_text:
                 print(f"DEBUG: tweet text selector hit: {selector}")
-                browser.close()
                 return merged_text
 
             print(f"DEBUG: tweet text selector hit but empty: {selector}")
 
+        print("DEBUG: selector-based extraction failed, trying article fallback")
+        article_texts = page.eval_on_selector_all("article", "els => els.map(e => (e.innerText || '').trim())")
+        print(f"DEBUG: article fallback count: {len(article_texts)}")
+        fallback_text = _extract_text_from_article_fallback(article_texts)
+        if fallback_text:
+            print(f"DEBUG: article fallback selected: {_truncate_text(fallback_text, 120)}")
+            return fallback_text
+
         print("DEBUG: tweet text could not be extracted from status page")
-        browser.close()
         return None
 
 
