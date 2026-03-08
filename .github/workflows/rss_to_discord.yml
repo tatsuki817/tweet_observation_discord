@@ -1,4 +1,4 @@
-name: RSS to Discord
+name: X Profile to Discord
 
 on:
   schedule:
@@ -21,9 +21,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run RSS check
+      - name: Run X profile check
         env:
-          RSS_URL: ${{ secrets.RSS_URL }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_USERNAME: ${{ secrets.DISCORD_USERNAME }}
         run: python check_rss.py
