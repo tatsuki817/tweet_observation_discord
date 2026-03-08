@@ -15,6 +15,13 @@ DEFAULT_DISCORD_USERNAME = "X通知Bot"
 TARGET_USERNAME = "F3yT8"
 DISCORD_CONTENT_LIMIT = 2000
 LOG_TEXT_LIMIT = 300
+DEBUG_HTML_PREVIEW_LIMIT = 500
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+ACCEPT_LANGUAGE = "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"
 
 
 def _extract_status_urls_from_hrefs(hrefs: List[str], username: str) -> List[str]:
@@ -48,16 +55,26 @@ def _truncate_for_discord(message: str) -> str:
     return _truncate_text(message, DISCORD_CONTENT_LIMIT)
 
 
+def _new_context(browser):
+    return browser.new_context(
+        user_agent=BROWSER_USER_AGENT,
+        locale="ja-JP",
+        timezone_id="Asia/Tokyo",
+        viewport={"width": 1366, "height": 768},
+        extra_http_headers={"Accept-Language": ACCEPT_LANGUAGE},
+    )
+
+
 def fetch_latest_status_url(username: str) -> Tuple[str, str, str, int]:
     target_url = f"https://x.com/{username}"
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
+        context = _new_context(browser)
         page = context.new_page()
 
         page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(6000)
 
         page_title = page.title()
         current_url = page.url
@@ -83,15 +100,22 @@ def fetch_post_text(status_url: str) -> Optional[str]:
         'article [data-testid="tweetText"]',
         'div[data-testid="tweetText"]',
         'article div[lang]',
+        'main article div[lang]',
     ]
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
+        context = _new_context(browser)
         page = context.new_page()
 
+        print(f"DEBUG: open status page: {status_url}")
         page.goto(status_url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(7000)
+
+        print(f"DEBUG: status page title: {page.title()}")
+        print(f"DEBUG: status page url: {page.url}")
+        html_preview = _truncate_text(page.content().replace("\n", " "), DEBUG_HTML_PREVIEW_LIMIT)
+        print(f"DEBUG: status page html preview: {html_preview}")
 
         for selector in selectors:
             texts = page.eval_on_selector_all(selector, "els => els.map(e => (e.innerText || '').trim())")
@@ -131,16 +155,13 @@ def send_discord(
     post_text: Optional[str],
     username: str,
     text_failed: bool,
-    is_initial_test: bool,
 ) -> None:
-    header = "初回テスト通知" if is_initial_test else "新着ポストを検知"
-
     if post_text:
-        message = f"{header}\n@{TARGET_USERNAME}\n{post_text}\n{status_url}"
+        message = f"新着ポストを検知したよ\n@{TARGET_USERNAME}\n{post_text}\n{status_url}"
     elif text_failed:
-        message = f"{header}\n@{TARGET_USERNAME}\n本文取得失敗\n{status_url}"
+        message = f"新着ポストを検知したよ\n@{TARGET_USERNAME}\n本文取得失敗\n{status_url}"
     else:
-        message = f"{header}\n@{TARGET_USERNAME}\n{status_url}"
+        message = f"新着ポストを検知したよ\n@{TARGET_USERNAME}\n{status_url}"
 
     payload = {
         "username": username,
@@ -162,14 +183,16 @@ def try_fetch_post_text(status_url: str) -> Tuple[Optional[str], bool]:
     try:
         post_text = fetch_post_text(status_url)
         if not post_text:
-            print("WARN: 本文抽出に失敗したためフォールバック通知/ログを使います")
+            print("WARN: 本文取得失敗のため URL のみで継続します")
             return None, True
         return post_text, False
     except (PlaywrightTimeoutError, PlaywrightError) as e:
         print(f"WARN: 個別ポストページ取得/抽出に失敗しました: {e}")
+        print("WARN: 本文取得失敗のため URL のみで継続します")
         return None, True
     except Exception as e:
         print(f"WARN: 本文取得中に想定外エラー: {e}")
+        print("WARN: 本文取得失敗のため URL のみで継続します")
         return None, True
 
 
@@ -190,12 +213,15 @@ def main() -> int:
         state = load_state()
         last_id = state.get("last_id")
 
-        # 初回実行: 本文取得してテスト通知を送ってから保存
+        # 初回実行: URL保存。本文取得は試すが失敗しても成功終了
         if not last_id:
             post_text, text_failed = try_fetch_post_text(latest_status_url)
-            send_discord(webhook_url, latest_status_url, post_text, discord_username, text_failed, is_initial_test=True)
+            if post_text:
+                print(f"INFO: 初回実行。最新本文ログ: {_truncate_text(post_text, LOG_TEXT_LIMIT)}")
+            elif text_failed:
+                print("INFO: 初回実行。本文取得失敗")
             save_state(latest_status_url)
-            print("初回実行: テスト通知を送信し、last_id を保存しました")
+            print("初回実行: 通知せず、last_id を保存しました")
             return 0
 
         # 2回目以降・新着なし: 本文だけ取得してログに出す（通知しない）
@@ -209,9 +235,9 @@ def main() -> int:
                 print("INFO: 新着なし。本文なし")
             return 0
 
-        # 新着あり: 本文取得して通常通知
+        # 新着あり: 本文取得して通知（失敗時はURLのみで通知）
         post_text, text_failed = try_fetch_post_text(latest_status_url)
-        send_discord(webhook_url, latest_status_url, post_text, discord_username, text_failed, is_initial_test=False)
+        send_discord(webhook_url, latest_status_url, post_text, discord_username, text_failed)
         save_state(latest_status_url)
         print("新着を通知して last_id を更新しました")
         return 0
