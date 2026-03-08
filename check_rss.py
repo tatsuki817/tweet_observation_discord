@@ -14,6 +14,7 @@ STATE_FILE = "state.json"
 DEFAULT_DISCORD_USERNAME = "X通知Bot"
 TARGET_USERNAME = "F3yT8"
 DISCORD_CONTENT_LIMIT = 2000
+LOG_TEXT_LIMIT = 300
 
 
 def _extract_status_urls_from_hrefs(hrefs: List[str], username: str) -> List[str]:
@@ -37,10 +38,14 @@ def _normalize_text(text: str) -> str:
     return "\n".join(lines)
 
 
+def _truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
 def _truncate_for_discord(message: str) -> str:
-    if len(message) <= DISCORD_CONTENT_LIMIT:
-        return message
-    return message[: DISCORD_CONTENT_LIMIT - 3] + "..."
+    return _truncate_text(message, DISCORD_CONTENT_LIMIT)
 
 
 def fetch_latest_status_url(username: str) -> Tuple[str, str, str, int]:
@@ -120,13 +125,22 @@ def save_state(last_id: str) -> None:
         f.write("\n")
 
 
-def send_discord(webhook_url: str, status_url: str, post_text: Optional[str], username: str, text_failed: bool) -> None:
+def send_discord(
+    webhook_url: str,
+    status_url: str,
+    post_text: Optional[str],
+    username: str,
+    text_failed: bool,
+    is_initial_test: bool,
+) -> None:
+    header = "初回テスト通知" if is_initial_test else "新着ポストを検知"
+
     if post_text:
-        message = f"新着ポストを検知\n@{TARGET_USERNAME}\n{post_text}\n{status_url}"
+        message = f"{header}\n@{TARGET_USERNAME}\n{post_text}\n{status_url}"
     elif text_failed:
-        message = f"新着ポストを検知\n@{TARGET_USERNAME}\n本文取得失敗\n{status_url}"
+        message = f"{header}\n@{TARGET_USERNAME}\n本文取得失敗\n{status_url}"
     else:
-        message = f"新着ポストを検知\n@{TARGET_USERNAME}\n{status_url}"
+        message = f"{header}\n@{TARGET_USERNAME}\n{status_url}"
 
     payload = {
         "username": username,
@@ -142,6 +156,21 @@ def send_discord(webhook_url: str, status_url: str, post_text: Optional[str], us
     with urllib.request.urlopen(req, timeout=30) as response:
         if response.status < 200 or response.status >= 300:
             raise RuntimeError(f"Discord通知に失敗しました: status={response.status}")
+
+
+def try_fetch_post_text(status_url: str) -> Tuple[Optional[str], bool]:
+    try:
+        post_text = fetch_post_text(status_url)
+        if not post_text:
+            print("WARN: 本文抽出に失敗したためフォールバック通知/ログを使います")
+            return None, True
+        return post_text, False
+    except (PlaywrightTimeoutError, PlaywrightError) as e:
+        print(f"WARN: 個別ポストページ取得/抽出に失敗しました: {e}")
+        return None, True
+    except Exception as e:
+        print(f"WARN: 本文取得中に想定外エラー: {e}")
+        return None, True
 
 
 def main() -> int:
@@ -161,30 +190,28 @@ def main() -> int:
         state = load_state()
         last_id = state.get("last_id")
 
+        # 初回実行: 本文取得してテスト通知を送ってから保存
         if not last_id:
+            post_text, text_failed = try_fetch_post_text(latest_status_url)
+            send_discord(webhook_url, latest_status_url, post_text, discord_username, text_failed, is_initial_test=True)
             save_state(latest_status_url)
-            print("初回実行のため通知せず、last_id を保存しました")
+            print("初回実行: テスト通知を送信し、last_id を保存しました")
             return 0
 
+        # 2回目以降・新着なし: 本文だけ取得してログに出す（通知しない）
         if last_id == latest_status_url:
-            print("新着なし")
+            post_text, text_failed = try_fetch_post_text(latest_status_url)
+            if post_text:
+                print(f"INFO: 新着なし。最新本文ログ: {_truncate_text(post_text, LOG_TEXT_LIMIT)}")
+            elif text_failed:
+                print("INFO: 新着なし。本文取得失敗")
+            else:
+                print("INFO: 新着なし。本文なし")
             return 0
 
-        post_text: Optional[str] = None
-        text_failed = False
-        try:
-            post_text = fetch_post_text(latest_status_url)
-            if not post_text:
-                text_failed = True
-                print("WARN: 本文抽出に失敗したためURLのみ（またはフォールバック）で通知します")
-        except (PlaywrightTimeoutError, PlaywrightError) as e:
-            text_failed = True
-            print(f"WARN: 個別ポストページ取得/抽出に失敗しました: {e}")
-        except Exception as e:
-            text_failed = True
-            print(f"WARN: 本文取得中に想定外エラー: {e}")
-
-        send_discord(webhook_url, latest_status_url, post_text, discord_username, text_failed)
+        # 新着あり: 本文取得して通常通知
+        post_text, text_failed = try_fetch_post_text(latest_status_url)
+        send_discord(webhook_url, latest_status_url, post_text, discord_username, text_failed, is_initial_test=False)
         save_state(latest_status_url)
         print("新着を通知して last_id を更新しました")
         return 0
