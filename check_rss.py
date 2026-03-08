@@ -22,6 +22,7 @@ BROWSER_USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 ACCEPT_LANGUAGE = "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"
+MAX_STATUS_CANDIDATES_TO_CHECK = 3
 
 
 def _extract_status_urls_from_hrefs(hrefs: List[str], username: str) -> List[str]:
@@ -243,9 +244,11 @@ def try_fetch_post_text(status_url: str) -> Tuple[Optional[str], bool]:
 
 
 def choose_status_with_text(status_urls: List[str]) -> Tuple[str, Optional[str], bool]:
-    print(f"INFO: status URL candidates: {len(status_urls)}")
+    target_candidates = status_urls[:MAX_STATUS_CANDIDATES_TO_CHECK]
+    print(f"INFO: status URL candidates total: {len(status_urls)}")
+    print(f"INFO: status URL candidates to check: {len(target_candidates)} (max={MAX_STATUS_CANDIDATES_TO_CHECK})")
 
-    for idx, candidate_url in enumerate(status_urls, start=1):
+    for idx, candidate_url in enumerate(target_candidates, start=1):
         print(f"INFO: try candidate[{idx}]: {candidate_url}")
         post_text, text_failed = try_fetch_post_text(candidate_url)
         if post_text:
@@ -254,7 +257,7 @@ def choose_status_with_text(status_urls: List[str]) -> Tuple[str, Optional[str],
 
         print(f"INFO: candidate[{idx}] 本文取得失敗。固定ツイート等の可能性があるためスキップ")
 
-    fallback_url = status_urls[0]
+    fallback_url = target_candidates[0] if target_candidates else status_urls[0]
     print(f"INFO: 全候補で本文取得できませんでした。先頭候補をフォールバック採用: {fallback_url}")
     return fallback_url, None, True
 
