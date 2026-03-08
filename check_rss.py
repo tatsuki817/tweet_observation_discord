@@ -5,36 +5,83 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from typing import List, Tuple
 
 STATE_FILE = "state.json"
 DEFAULT_DISCORD_USERNAME = "X通知Bot"
 TARGET_USERNAME = "F3yT8"
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 
-def fetch_profile_html(username: str) -> str:
-    # Xプロフィールページを取得（最小構成のため標準ライブラリで実装）
-    profile_url = f"https://x.com/{username}"
-    req = urllib.request.Request(
-        profile_url,
-        headers={"User-Agent": "Mozilla/5.0 (x-profile-to-discord-bot)"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as response:
-        return response.read().decode("utf-8", errors="replace")
+def fetch_profile_html(username: str) -> Tuple[str, str, int]:
+    # x.com / twitter.com の順で取得を試す
+    profile_urls = [
+        f"https://x.com/{username}",
+        f"https://twitter.com/{username}",
+    ]
+
+    last_error = None
+    for profile_url in profile_urls:
+        print(f"DEBUG: Fetch URL: {profile_url}")
+        req = urllib.request.Request(
+            profile_url,
+            headers={"User-Agent": BROWSER_UA},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                status = getattr(response, "status", response.getcode())
+                html = response.read().decode("utf-8", errors="replace")
+                print(f"DEBUG: HTTP status: {status}")
+                return html, profile_url, int(status)
+        except urllib.error.HTTPError as e:
+            print(f"DEBUG: HTTP status: {e.code} (error)")
+            last_error = e
+        except urllib.error.URLError as e:
+            print(f"DEBUG: URL error: {e}")
+            last_error = e
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("プロフィールページの取得に失敗しました")
+
+
+def _collect_status_urls(html: str, username: str) -> List[str]:
+    # 複数パターンで status URL を抽出
+    patterns = [
+        rf"https?://(?:x|twitter)\.com/{re.escape(username)}/status/(\d+)",
+        rf"/{re.escape(username)}/status/(\d+)",
+        rf"%2F{re.escape(username)}%2Fstatus%2F(\d+)",
+    ]
+
+    hits: List[str] = []
+    for idx, pattern in enumerate(patterns, start=1):
+        regex = re.compile(pattern, re.IGNORECASE)
+        matches = regex.findall(html)
+        print(f"DEBUG: regex[{idx}] hit count: {len(matches)}")
+        for status_id in matches:
+            url = f"https://x.com/{username}/status/{status_id}"
+            if url not in hits:
+                hits.append(url)
+
+    print(f"DEBUG: total unique hit count: {len(hits)}")
+    return hits
 
 
 def extract_latest_status_url(html: str, username: str) -> str:
-    # HTML中から /<username>/status/<id> を1件抽出する
-    # 先頭一致を「最新」として扱う（最小構成）
-    pattern = re.compile(rf"/{re.escape(username)}/status/(\d+)", re.IGNORECASE)
-    match = pattern.search(html)
-    if not match:
+    hits = _collect_status_urls(html, username)
+    if not hits:
+        html_preview = html[:1000].replace("\n", "\\n")
         raise ValueError(
             f"{username} の最新 status URL をHTMLから抽出できませんでした。"
-            "ページ構造変更、アクセス制限、または一時的な取得失敗の可能性があります。"
+            f" HTML先頭プレビュー: {html_preview}"
+            " ヒット件数: 0"
         )
 
-    status_id = match.group(1)
-    return f"https://x.com/{username}/status/{status_id}"
+    return hits[0]
 
 
 def load_state() -> dict:
@@ -77,7 +124,12 @@ def main() -> int:
         return 1
 
     try:
-        html = fetch_profile_html(TARGET_USERNAME)
+        html, fetched_url, fetched_status = fetch_profile_html(TARGET_USERNAME)
+        print(f"DEBUG: Fetched URL: {fetched_url}")
+        print(f"DEBUG: Fetched status: {fetched_status}")
+        html_preview = html[:1000].replace('\n', '\\n')
+        print(f"DEBUG: HTML preview (first 1000 chars): {html_preview}")
+
         latest_status_url = extract_latest_status_url(html, TARGET_USERNAME)
 
         state = load_state()
