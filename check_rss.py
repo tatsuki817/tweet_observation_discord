@@ -248,14 +248,30 @@ def choose_status_with_text(status_urls: List[str]) -> Tuple[str, Optional[str],
     print(f"INFO: status URL candidates total: {len(status_urls)}")
     print(f"INFO: status URL candidates to check: {len(target_candidates)} (max={MAX_STATUS_CANDIDATES_TO_CHECK})")
 
-    for idx, candidate_url in enumerate(target_candidates, start=1):
-        print(f"INFO: try candidate[{idx}]: {candidate_url}")
-        post_text, text_failed = try_fetch_post_text(candidate_url)
-        if post_text:
-            print(f"INFO: candidate[{idx}] 本文取得成功。採用URL: {candidate_url}")
-            return candidate_url, post_text, False
+    first_success_url: Optional[str] = None
+    first_success_text: Optional[str] = None
 
-        print(f"INFO: candidate[{idx}] 本文取得失敗。固定ツイート等の可能性があるためスキップ")
+    for idx, candidate_url in enumerate(target_candidates, start=1):
+        print(f"INFO: candidate[{idx}] URL: {candidate_url}")
+        post_text, text_failed = try_fetch_post_text(candidate_url)
+
+        if post_text:
+            preview = _truncate_text(post_text, 120)
+            print(f"INFO: candidate[{idx}] 本文: {preview}")
+            if first_success_url is None:
+                first_success_url = candidate_url
+                first_success_text = post_text
+                print(f"INFO: candidate[{idx}] 本文取得成功。採用候補として保持")
+            continue
+
+        if text_failed:
+            print(f"INFO: candidate[{idx}] 本文取得失敗（固定ツイート等の可能性）")
+        else:
+            print(f"INFO: candidate[{idx}] 本文なし")
+
+    if first_success_url is not None:
+        print(f"INFO: 採用URL: {first_success_url}")
+        return first_success_url, first_success_text, False
 
     fallback_url = target_candidates[0] if target_candidates else status_urls[0]
     print(f"INFO: 全候補で本文取得できませんでした。先頭候補をフォールバック採用: {fallback_url}")
