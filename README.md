@@ -1,19 +1,19 @@
 # X 1アカウント監視 → Discord通知（GitHub Actions最小構成）
 
-このリポジトリは、**@F3yT8 のプロフィールページ（`https://x.com/F3yT8`）を監視し、最新投稿URLをDiscord Webhookへ通知する最小構成**です。  
+このリポジトリは、**@F3yT8 のプロフィールページ（`https://x.com/F3yT8`）を Playwright で未ログイン閲覧し、最新投稿URLをDiscord Webhookへ通知する最小構成**です。  
 有料Botサービスは使わず、GitHub Actionsの定期実行で動かします。
 
 ## 構成ファイル
 
-- `check_rss.py`: XプロフィールHTMLを取得し、最新 `status` URL を抽出してDiscordへ通知
+- `check_rss.py`: Playwright でXプロフィールを開き、最新 `status` URL を抽出してDiscordへ通知
 - `.github/workflows/rss_to_discord.yml`: 10分ごとの定期実行 + 手動実行
 - `state.json`: 最後に処理した投稿URL（`last_id`）を保存
 
 ## 前提（public repository）
 
 - public repository で GitHub Actions を使う前提
-- Python標準ライブラリのみ（外部ライブラリなし）
 - 監視対象は **@F3yT8 のみ**
+- GitHub Actions上で Playwright（Chromium）をインストールして実行
 
 ## GitHub Secrets の設定
 
@@ -22,8 +22,6 @@
 - `DISCORD_WEBHOOK_URL`（必須）
 - `DISCORD_USERNAME`（任意）
   - 未設定時は `X通知Bot` が使われます
-
-> 以前使っていた `RSS_URL` はこの方式では不要です。
 
 ## Discord Webhook URL の用意方法
 
@@ -34,8 +32,8 @@
 
 ## 動作仕様
 
-1. `https://x.com/F3yT8` のHTMLを取得
-2. HTMLから最新の `/F3yT8/status/<id>` を1件抽出
+1. Playwright で `https://x.com/F3yT8` を開く（未ログイン）
+2. 少し待機してDOM描画後に `/F3yT8/status/<id>` を1件抽出
 3. `state.json` の `last_id` と比較
 4. 初回実行（`last_id` が未保存）:
    - **通知しない**
@@ -58,11 +56,18 @@
 
 ワークフローは `state.json` の変更があれば自動で commit/push します。
 
+## 取得失敗時のログ
+
+抽出失敗時は、Actionsログに以下を出力します。
+
+- ページタイトル
+- ページURL
+- statusリンク候補件数
+
 ## トラブル時の確認ポイント
 
 - `DISCORD_WEBHOOK_URL` が正しいか
 - Secrets 名が完全一致しているか（`DISCORD_WEBHOOK_URL`）
-- Actions ログに以下が出ていないか
-  - `ERROR: F3yT8 の最新 status URL をHTMLから抽出できませんでした。...`
-- X側のページ構造変更、Botアクセス制限、または一時的な取得失敗がないか
+- Actions ログに `ERROR: Playwright実行に失敗しました` や `statusリンクを抽出できませんでした` が出ていないか
+- X側の表示仕様変更やアクセス制限がないか
 
