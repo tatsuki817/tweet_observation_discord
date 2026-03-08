@@ -1,6 +1,6 @@
 # X 1アカウント監視 → Discord通知（GitHub Actions最小構成）
 
-このリポジトリは、**@F3yT8 のプロフィールページ（`https://x.com/F3yT8`）を Playwright で未ログイン閲覧し、最新投稿URLをDiscord Webhookへ通知する最小構成**です。  
+このリポジトリは、**@F3yT8 のプロフィールページ（`https://x.com/F3yT8`）を Playwright で未ログイン閲覧し、最新投稿の本文とURLをDiscord Webhookへ通知する最小構成**です。  
 有料Botサービスは使わず、GitHub Actionsの定期実行で動かします。
 
 ## 構成ファイル
@@ -34,11 +34,12 @@
 
 1. Playwright で `https://x.com/F3yT8` を開く（未ログイン）
 2. 少し待機してDOM描画後に `/F3yT8/status/<id>` を1件抽出
-3. `state.json` の `last_id` と比較
-4. 初回実行（`last_id` が未保存）:
+3. 新着を検知した場合、その個別ポストページを開いて本文を取得
+4. `state.json` の `last_id` と比較
+5. 初回実行（`last_id` が未保存）:
    - **通知しない**
    - 最新URLのみ `state.json` に保存
-5. 2回目以降:
+6. 2回目以降:
    - 新しい投稿があれば Discord Webhook へ通知
    - 通知後に `state.json` を更新
    - 差分がなければ何もしない
@@ -46,7 +47,8 @@
 通知メッセージには以下を含みます。
 
 - `新着ポストを検知したよ`
-- `タイトル`
+- `@F3yT8`
+- `本文`（取得できた場合）
 - `URL`
 
 ## GitHub Actions 実行タイミング
@@ -63,11 +65,13 @@
 - ページタイトル
 - ページURL
 - statusリンク候補件数
+- 本文抽出に使ったselectorのヒット状況
 
 ## トラブル時の確認ポイント
 
 - `DISCORD_WEBHOOK_URL` が正しいか
 - Secrets 名が完全一致しているか（`DISCORD_WEBHOOK_URL`）
 - Actions ログに `ERROR: Playwright実行に失敗しました` や `statusリンクを抽出できませんでした` が出ていないか
+- 本文取得に失敗しても `本文取得失敗` のフォールバック通知が送られているか
 - X側の表示仕様変更やアクセス制限がないか
 

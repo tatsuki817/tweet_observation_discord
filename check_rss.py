@@ -4,7 +4,7 @@ import os
 import re
 import sys
 import urllib.request
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -13,6 +13,7 @@ from playwright.sync_api import sync_playwright
 STATE_FILE = "state.json"
 DEFAULT_DISCORD_USERNAME = "X通知Bot"
 TARGET_USERNAME = "F3yT8"
+DISCORD_CONTENT_LIMIT = 2000
 
 
 def _extract_status_urls_from_hrefs(hrefs: List[str], username: str) -> List[str]:
@@ -28,6 +29,18 @@ def _extract_status_urls_from_hrefs(hrefs: List[str], username: str) -> List[str
             hits.append(status_url)
 
     return hits
+
+
+def _normalize_text(text: str) -> str:
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    return "\n".join(lines)
+
+
+def _truncate_for_discord(message: str) -> str:
+    if len(message) <= DISCORD_CONTENT_LIMIT:
+        return message
+    return message[: DISCORD_CONTENT_LIMIT - 3] + "..."
 
 
 def fetch_latest_status_url(username: str) -> Tuple[str, str, str, int]:
@@ -60,6 +73,40 @@ def fetch_latest_status_url(username: str) -> Tuple[str, str, str, int]:
         return latest_status_url, page_title, current_url, hit_count
 
 
+def fetch_post_text(status_url: str) -> Optional[str]:
+    selectors = [
+        'article [data-testid="tweetText"]',
+        'div[data-testid="tweetText"]',
+        'article div[lang]',
+    ]
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+
+        page.goto(status_url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(4000)
+
+        for selector in selectors:
+            texts = page.eval_on_selector_all(selector, "els => els.map(e => (e.innerText || '').trim())")
+            if not texts:
+                print(f"DEBUG: tweet text selector no hit: {selector}")
+                continue
+
+            merged_text = _normalize_text("\n".join([t for t in texts if t.strip()]))
+            if merged_text:
+                print(f"DEBUG: tweet text selector hit: {selector}")
+                browser.close()
+                return merged_text
+
+            print(f"DEBUG: tweet text selector hit but empty: {selector}")
+
+        print("DEBUG: tweet text could not be extracted from status page")
+        browser.close()
+        return None
+
+
 def load_state() -> dict:
     if not os.path.exists(STATE_FILE):
         return {}
@@ -73,10 +120,17 @@ def save_state(last_id: str) -> None:
         f.write("\n")
 
 
-def send_discord(webhook_url: str, status_url: str, username: str) -> None:
+def send_discord(webhook_url: str, status_url: str, post_text: Optional[str], username: str, text_failed: bool) -> None:
+    if post_text:
+        message = f"新着ポストを検知\n@{TARGET_USERNAME}\n{post_text}\n{status_url}"
+    elif text_failed:
+        message = f"新着ポストを検知\n@{TARGET_USERNAME}\n本文取得失敗\n{status_url}"
+    else:
+        message = f"新着ポストを検知\n@{TARGET_USERNAME}\n{status_url}"
+
     payload = {
         "username": username,
-        "content": f"新着ポストを検知したよ\nタイトル: @{TARGET_USERNAME} の新着ポスト\nURL: {status_url}",
+        "content": _truncate_for_discord(message),
     }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -116,7 +170,21 @@ def main() -> int:
             print("新着なし")
             return 0
 
-        send_discord(webhook_url, latest_status_url, discord_username)
+        post_text: Optional[str] = None
+        text_failed = False
+        try:
+            post_text = fetch_post_text(latest_status_url)
+            if not post_text:
+                text_failed = True
+                print("WARN: 本文抽出に失敗したためURLのみ（またはフォールバック）で通知します")
+        except (PlaywrightTimeoutError, PlaywrightError) as e:
+            text_failed = True
+            print(f"WARN: 個別ポストページ取得/抽出に失敗しました: {e}")
+        except Exception as e:
+            text_failed = True
+            print(f"WARN: 本文取得中に想定外エラー: {e}")
+
+        send_discord(webhook_url, latest_status_url, post_text, discord_username, text_failed)
         save_state(latest_status_url)
         print("新着を通知して last_id を更新しました")
         return 0
